@@ -2,47 +2,33 @@ pipeline {
     agent any
 
     environment {
-        CHAT_APP_SERVER = "ec2-user@54.156.114.207"
-        APP_DIR = "/home/ec2-user/chatapp"
-        CREDENTIAL_ID = "ec2-deploy-key"
+        ANSIBLE_HOST_KEY_CHECKING = 'False'
+        PRIVATE_KEY_PATH = '/home/jenkins/.ssh/saturday.pem'
     }
 
     stages {
-        stage('Clone Repo') {
+        stage('Checkout') {
             steps {
-                git branch: 'main', url: 'https://github.com/bodukal/chatapp.git'
+                git url: 'git@github.com:bodukal/chatapp.git', branch: 'main'
             }
         }
 
-        stage('Install Dependencies') {
+        stage('Run Ansible Playbook') {
             steps {
-                sh 'npm install'
-            }
-        }
-
-        stage('Deploy to Server') {
-            steps {
-                sshagent (credentials: ['ec2-deploy-key']) {
-                    sh """
-                        ssh -o StrictHostKeyChecking=no $CHAT_APP_SERVER '
-                            cd $APP_DIR &&
-                            git pull origin main &&
-                            npm install &&
-                            pm2 restart chatapp || pm2 start app.js --name chatapp
-                        '
-                    """
-                }
+                sh '''
+                    cd chatapp-ansible
+                    ansible-playbook -i inventory.ini setup.yml --private-key=${PRIVATE_KEY_PATH}
+                '''
             }
         }
     }
 
     post {
-        success {
-            echo '✅ Deployment successful!'
-        }
         failure {
-            echo '❌ Deployment failed!'
+            echo 'Deployment failed!'
+        }
+        success {
+            echo 'Deployment successful!'
         }
     }
 }
-
