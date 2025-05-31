@@ -21,5 +21,118 @@
 
     - name: Install PM2 globally
       npm:
-                                                              1,1           Top
+        name: pm2
+        global: yes
+      become_user: "{{ app_user }}"
 
+    - name: Stop and delete existing PM2 processes
+      shell: |
+        pm2 stop chatapp || true
+        pm2 delete chatapp || true
+      become_user: "{{ app_user }}"
+      ignore_errors: yes
+
+    - name: Find the main entry point
+      shell: |
+        cd {{ app_dir }}
+        MAIN_FILE=$(node -p "require('./package.json').main" 2>/dev/null || echo "")
+        START_SCRIPT=$(node -p "require('./package.json').scripts && require('./package.json').scripts.start" 2>/dev/null || echo "")
+        POSSIBLE_FILES=("$MAIN_FILE" "app.js" "server.js" "index.js" "src/app.js" "src/server.js" "src/index.js")
+        for file in "${POSSIBLE_FILES[@]}"; do
+          if [[ -n "$file" && -f "$file" ]]; then
+            echo "ENTRY_POINT=$file"
+            exit 0
+          fi
+        done
+        if [[ -n "$START_SCRIPT" ]]; then
+          echo "ENTRY_POINT=npm"
+          exit 0
+        fi
+        echo "ENTRY_POINT=none"
+      register: entry_point_result
+      become_user: "{{ app_user }}"
+
+    - name: Display found entry point
+      debug:
+        msg: "Found entry point: {{ entry_point_result.stdout }}"
+
+    - name: Start app with detected entry point (JavaScript file)
+      shell: |
+        cd {{ app_dir }}
+        ENTRY="{{ entry_point_result.stdout.split('=')[1] }}"
+        pm2 start "$ENTRY" --name chatapp
+      become_user: "{{ app_user }}"
+      when: "'ENTRY_POINT=' in entry_point_result.stdout and 'npm' not in entry_point_result.stdout and 'none' not in entry_point_result.stdout"
+
+    - name: Start app with npm start
+      shell: |
+        cd {{ app_dir }}
+        pm2 start npm --name chatapp -- start
+      become_user: "{{ app_user }}"
+      when: "'ENTRY_POINT=npm' in entry_point_result.stdout"
+
+    - name: Manual fallback - show directory contents for manual fixing
+      shell: |
+        cd {{ app_dir }}
+        echo "=== Directory Contents ==="
+        ls -la
+        echo "=== Package.json main/scripts ==="
+        cat package.json | grep -A 10 -B 2 -E "(main|scripts)"
+        echo "=== All JS files ==="
+        find . -name "*.js" -type f
+      register: manual_debug
+      become_user: "{{ app_user }}"
+      when: "'ENTRY_POINT=none' in entry_point_result.stdout"
+
+    - name: Show manual debug info
+      debug:
+        var: manual_debug.stdout_lines
+      when: "'ENTRY_POINT=none' in entry_point_result.stdout"
+
+    - name: Check final PM2 status
+      shell: pm2 status
+      become_user: "{{ app_user }}"
+      register: final_status
+
+    - name: Display final PM2 status
+      debug:
+        var: final_status.stdout_lines
+
+    - name: Configure PM2 to start on reboot
+      shell: |
+        pm2 startup systemd -u {{ app_user }} --hp /home/{{ app_user }}
+        pm2 save
+      become: yes
+
+    - name: Install Nginx
+      yum:
+        name: nginx
+        state: present
+
+    - name: Start and enable Nginx
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Configure Nginx reverse proxy
+      copy:
+        dest: /etc/nginx/conf.d/chatapp.conf
+        content: |
+          server {
+              listen 80;
+              server_name _;
+              location / {
+                  proxy_pass http://localhost:3000;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection 'upgrade';
+                  proxy_set_header Host $host;
+                  proxy_cache_bypass $http_upgrade;
+              }
+          }
+
+    - name: Restart Nginx to apply config
+      service:
+        name: nginx
+        state: restarted
