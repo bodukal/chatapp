@@ -9,7 +9,7 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                git url: 'git@github.com:bodukal/chatapp.git', branch: 'main'
+                git url: 'https://github.com/bodukal/chatapp.git', branch: 'main'
             }
         }
 
